@@ -3,24 +3,9 @@ using BoostFractor, Plots
 using BoostFractor: e_field_dimensions
 
 
-function axionModes(coords::Coordinates,modes::Modes,f::Real,velocity_x::Real)
-    d = fieldDims(modes)
-    Ea = zeros(ComplexF64,length(coords.X),length(coords.X),d)
-    Ea[:,:,1+Int(d==3)] .= 1; Ea .*= coords.diskmaskin
-
-    # inaccuracies of the emitted fields: B-field and velocity effects
-    if velocity_x != 0
-        k_a = 2π*f/c0 # k = 2pi/lambda (c/f = lambda)
-
-        for (i,x) in enumerate(coords.X); Ea[i,:,:] .*= cis(k_a*x*velocity_x); end
-    end
-
-    return modeDecomp(Ea,modes)
-end
 
 
-
-function axion_induced_modes(coords::CoordinateSystem, modes::Modes;B=nothing, diskR=0.15)
+function axion_induced_modes(coords::CoordinateSystem, modes::Modes; B=nothing, diskR=0.15)
     if B === nothing
         if e_field_dimensions(modes) == 1
             B = ones(length(coords.X), length(coords.Y), e_field_dimensions(modes))
@@ -42,18 +27,10 @@ function axion_induced_modes(coords::CoordinateSystem, modes::Modes;B=nothing, d
     return modes_initial
 end
 
-field2modes(pattern, coords::CoordinateSystem, modes::Modes;diskR=0.15) = axion_induced_modes(coords, modes;B=pattern,diskR=diskR)
 
-function modes2field(mode_coeffs, coords::CoordinateSystem, modes::Modes)
-    result = Array{Complex{Float64}}(zeros(length(coords.X), length(coords.Y), e_field_dimensions(modes)))
-    for m in 1:modes.M, l in -modes.L:modes.L
-            result[:,:,:] .+= mode_coeffs[(m-1)*(2modes.L+1)+l+modes.L+1].*modes.mode_patterns[m,l+modes.L+1,:,:,:]
-    end
-    return result
-end
+function propagation_matrix(dz, diskR, eps, tilt_x, tilt_y, surface, lambda, coords::CoordinateSystem, modes::Modes;
+        is_air=(real(eps)==1), onlydiagonal=false, prop=propagator)
 
-
-function propagation_matrix(dz, diskR, eps, tilt_x, tilt_y, surface, lambda, coords::CoordinateSystem, modes::Modes; is_air=(real(eps)==1), onlydiagonal=false, prop=propagator)
     matching_matrix = Array{Complex{Float64}}(zeros(modes.M*(2modes.L+1),modes.M*(2modes.L+1)))
 
     k0 = 2pi/lambda*sqrt(eps)
@@ -116,7 +93,12 @@ function calc_propagation_matrices(bdry::SetupBoundaries, coords::CoordinateSyst
             prop=prop) for i in 1:(Nregions) ]
 end
 
-function transformer(bdry::SetupBoundaries, coords::CoordinateSystem, modes::Modes; f=10.0e9, velocity_x=0, prop=propagator, propagation_matrices::Array{Array{Complex{T},2},1}=Array{Complex{Float64},2}[], diskR=0.15, emit=axion_induced_modes(coords,modes;B=nothing,velocity_x=velocity_x,diskR=diskR,f=f), reflect=nothing) where T<:Real
+function transformer(bdry::SetupBoundaries, coords::CoordinateSystem, modes::Modes;
+        f=10.0e9, prop=propagator,
+        propagation_matrices::Array{Array{Complex{T},2},1}=Array{Complex{Float64},2}[],
+        diskR=0.15, emit=axion_induced_modes(coords,modes;B=nothing,diskR=diskR),
+        reflect=nothing) where T<:Real
+    
     bdry.eps[isnan.(bdry.eps)] .= 1e30
 
     transmissionfunction_complete = [modes.id modes.zeromatrix ; modes.zeromatrix modes.id ]
@@ -170,7 +152,7 @@ tilty = deg2rad.([0,0,0,0])
 sbdry = SeedSetupBoundaries(coords; diskno=1,distance=distance,epsilon=eps,
     relative_tilt_x=tiltx,relative_tilt_y=tilty)
 
-M = 3; L = 2
+M = 1; L = 1
 modes = SeedModes(coords, ThreeDim=true, Mmax=M, Lmax=L, diskR=diskR)
 
 
