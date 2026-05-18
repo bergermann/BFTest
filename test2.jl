@@ -1,4 +1,25 @@
 
+using BoostFractor, Plots
+using BoostFractor: e_field_dimensions
+
+
+function axionModes(coords::Coordinates,modes::Modes,f::Real,velocity_x::Real)
+    d = fieldDims(modes)
+    Ea = zeros(ComplexF64,length(coords.X),length(coords.X),d)
+    Ea[:,:,1+Int(d==3)] .= 1; Ea .*= coords.diskmaskin
+
+    # inaccuracies of the emitted fields: B-field and velocity effects
+    if velocity_x != 0
+        k_a = 2π*f/c0 # k = 2pi/lambda (c/f = lambda)
+
+        for (i,x) in enumerate(coords.X); Ea[i,:,:] .*= cis(k_a*x*velocity_x); end
+    end
+
+    return modeDecomp(Ea,modes)
+end
+
+
+
 function axion_induced_modes(coords::CoordinateSystem, modes::Modes;B=nothing, diskR=0.15)
     if B === nothing
         if e_field_dimensions(modes) == 1
@@ -9,17 +30,11 @@ function axion_induced_modes(coords::CoordinateSystem, modes::Modes;B=nothing, d
         end
     end
 
-    # Only the axion-induced field on the disks matters:
     B .*= [sqrt(x^2 + y^2) <= diskR for x in coords.X, y in coords.Y]
-
-    # Note: in all the normalizations the dx factors are dropped, since they should drop out in the final
-    #       integrals
     B ./= sqrt.( sum(abs2.(B)) )
-
 
     modes_initial = Array{Complex{Float64}}(zeros(modes.M*(2modes.L+1)))
     for m in 1:modes.M, l in -modes.L:modes.L
-        # (m-1)*(2modes.L+1)+l+modes.L+1 walks over all possible m,l combinations
         modes_initial[(m-1)*(2modes.L+1)+l+modes.L+1] =
                 sum( conj.(modes.mode_patterns[m,l+modes.L+1,:,:,:]) .* B )
     end
@@ -27,15 +42,8 @@ function axion_induced_modes(coords::CoordinateSystem, modes::Modes;B=nothing, d
     return modes_initial
 end
 
-
-"""
-Get the mode coefficients for a given field distribution E(x,y)
-"""
 field2modes(pattern, coords::CoordinateSystem, modes::Modes;diskR=0.15) = axion_induced_modes(coords, modes;B=pattern,diskR=diskR)
 
-"""
-Get the field distribution E(x,y) for a given vector of mode coefficients
-"""
 function modes2field(mode_coeffs, coords::CoordinateSystem, modes::Modes)
     result = Array{Complex{Float64}}(zeros(length(coords.X), length(coords.Y), e_field_dimensions(modes)))
     for m in 1:modes.M, l in -modes.L:modes.L
@@ -52,27 +60,19 @@ function propagation_matrix(dz, diskR, eps, tilt_x, tilt_y, surface, lambda, coo
 
     propfunc = nothing # initialize
     if is_air
-        # In air use the propagator we get
         function propagate(x)
             return prop(copy(x), dz, diskR, eps, tilt_x, tilt_y, surface, lambda, coords)
         end
         propfunc = propagate
     else
-        # In the disk the modes are eigenmodes, so we only have to apply the
-        # inaccuracies and can apply the propagation later separately
         propfunc(efields) = efields.*[exp(-1im*k0*tilt_x*x) * exp(-1im*k0*tilt_y*y) for x in coords.X, y in coords.Y].*exp.(-1im*k0*surface)
     end
-
-    # Calculate the mixing matrix
+    
     for m_prime in 1:modes.M, l_prime in -modes.L:modes.L
-        # Propagated fields of mode (m_prime, l_prime)
         for i in 1:e_field_dimensions(modes)
-            # If 3D E-field, fields propagate separately. For interaction need to implement in propagator.
             propagated = propfunc(modes.mode_patterns[m_prime,l_prime+modes.L+1,:,:,i])
 
             for m in (onlydiagonal ? [m_prime] : 1:modes.M), l in (onlydiagonal ? [l_prime] : -modes.L:modes.L)
-                # P_ml^m'l' = <E_ml | E^p_m'l' > = ∫ dA \bm{E}_ml^* ⋅ \bm{E}^p_m'l' = ∑_{j = x,y,z} ∫ dA ({E}_j)_ml^* ⋅ ({E}_j)^p_m'l'
-                # 6.15 in Knirck
                 matching_matrix[(m-1)*(2modes.L+1)+l+modes.L+1, (m_prime-1)*(2modes.L+1)+l_prime+modes.L+1] +=
                         sum( conj.(modes.mode_patterns[m,l+modes.L+1,:,:,i]) .* propagated )
             end
@@ -81,59 +81,33 @@ function propagation_matrix(dz, diskR, eps, tilt_x, tilt_y, surface, lambda, coo
 
     if !is_air
         propagation_matrix = Array{Complex{Float64}}(zeros(modes.M*(2modes.L+1),modes.M*(2modes.L+1)))
-        #The propagation within the disk is still missing
         for m in 1:modes.M, l in -modes.L:modes.L
             kz = sqrt(k0^2 - modes.mode_kt[m,l+modes.L+1]^2)
             propagation_matrix[(m-1)*(2modes.L+1)+l+modes.L+1, (m-1)*(2modes.L+1)+l+modes.L+1] = exp(-1im*kz*dz)
         end
-        # It is important to note the multiplication from the left
+        
         matching_matrix = propagation_matrix*matching_matrix
     end
 
     return matching_matrix
-
-    # TODO: This only takes surface roughness at the end of the propagation into account, not at its
-    # start. General problem in all the codes so far.
 end
 
 function get_boundary_matrix(n_left, n_right, diffprop::Array{Complex{T}}, modes::Modes) where T<:Real
-    # We calculate G_r P_r analogous to eqs. 4.7
-    # where n_right = n_{r+1}, n_left = n_r
-
-    # The matrix encoding reflection and transmission (Knirck 6.18)
     G = (( (1. /(2*n_right)).*[(n_right+n_left)*modes.id (n_right-n_left)*modes.id ; (n_right-n_left)*modes.id (n_right+n_left)*modes.id] ))
 
 
-    # The product, i.e. transfer matrix
     return G * [diffprop modes.zeromatrix; modes.zeromatrix inv(Array{Complex{T}}(diffprop))]
-    # Note: we build up the system from the end (Lm) downwards until L0
-    # so this makes a transfer matrix from interface n -> m to a function that goes from interface n-1 ->m
-    # This is convenient, because using this iteratively one arrives at exactly the T_n^m matrix from
-    # the theoretical foundations paper
 end
 
-"""
-Calculates one summand of the term (M[2,1]+M[1,1]) E_0 = sum{s=1...m} (T_s^m[2,1]+T_s^m[1,1]) E_0
-as in equation 4.14a
-"""
 function axion_contrib(T,n1,n0, initial, modes::Modes)
     axion_beam = axion_S_factor(n1,n0) .* (T[index(modes,2),index(modes,1)]*(copy(initial)) + T[index(modes,2),index(modes,2)]*(copy(initial)))
     return axion_beam
 end
 
-
-
-"""
-    Prefactor in Theoretical Foundations (4.7c).
-"""
 function axion_S_factor(n1,n0)
     return (1. /n1^2 - 1. /n0^2)/2
 end
 
-"""
-Pre-calculates all the propagation matrices.
-Useful, if they should be altered later (e.g. take out modes, add some additional mixing, etc.)
-"""
 function calc_propagation_matrices(bdry::SetupBoundaries, coords::CoordinateSystem, modes::Modes; f=10.0e9, prop=propagator, diskR=0.15)
     Nregions = length(bdry.eps)
     lambda = wavelength(f)
@@ -142,76 +116,32 @@ function calc_propagation_matrices(bdry::SetupBoundaries, coords::CoordinateSyst
             prop=prop) for i in 1:(Nregions) ]
 end
 
-"""
-Transformer Algorithm using Transfer Matrices and Modes to do the 3D Calculation.
-"""
 function transformer(bdry::SetupBoundaries, coords::CoordinateSystem, modes::Modes; f=10.0e9, velocity_x=0, prop=propagator, propagation_matrices::Array{Array{Complex{T},2},1}=Array{Complex{Float64},2}[], diskR=0.15, emit=axion_induced_modes(coords,modes;B=nothing,velocity_x=velocity_x,diskR=diskR,f=f), reflect=nothing) where T<:Real
-    # For the transformer the region of the mirror must contain a high dielectric constant,
-    # as the mirror is not explicitly taken into account
-    # To have same SetupBoundaries object for all codes and cheerleader assumes NaN, just define a high constant
     bdry.eps[isnan.(bdry.eps)] .= 1e30
 
-    #Definitions
     transmissionfunction_complete = [modes.id modes.zeromatrix ; modes.zeromatrix modes.id ]
     lambda = wavelength(f)
 
     initial = emit
-    #println(initial)
 
     axion_beam = Array{Complex{T}}(zeros((modes.M)*(2modes.L+1)))
 
-    #println(axion_beam)
-
-    #=
-        To have the different algorithms consistent with each other,
-        we always assume that the mirror is at the left and we want to calculated
-        the boost factor / reflectivity /  ... on the right.
-        For the transfer matrices it is however more convenient to calcluate them
-        boost factor on the left (cf eq. 4.14a). Therefore, we use the following
-        little dummy function to "reindex" the SetupBoundaries arrays such that
-        we see it ordered the other way round.
-    =#
     Nregions = length(bdry.eps)
     idx_reg(s) = Nregions-s+1
 
-    #=
-        Essentially we want to calculate 4.14a
-        We iteratively calculate the T matrices, in each step directly computing its axion contribution.
-        We calculate T_{m-1}^m first, and then expand iteratively to get T_{n}^m.
-        Notice from eq. (4.9) that going one region down is a multiplication from the right, not the left, e.g.
-        T_3^5 = T_4^5 G_3 P_3.
 
-        I agree, iterating in reverse order and changing before the indices to
-        reverse, is not neccessary. Though, like this "s" follows the same Indexing
-        than in the theoretical foundations paper and we can call the function with
-        a bdry structure having the mirror at the lowest index.
-    =#
     for s in (Nregions-1):-1:1
-        # Add up the summands of (M[2,1]+M[1,1]) E_0
-        # (M is a sum over T_{s+1}^m S_s from s=1 to m) and we have just calculated
-        #  T_{s+1}^m in the previous iteration)
         axion_beam .+= axion_contrib(transmissionfunction_complete, sqrt(bdry.eps[idx_reg(s+1)]), sqrt(bdry.eps[idx_reg(s)]), initial, modes)
 
-        # calculate T_s^m ---------------------------
-
-        # Propagation matrix (later become the subblocks of P)
         diffprop = (isempty(propagation_matrices) ?
                         propagation_matrix(bdry.distance[idx_reg(s)], diskR, bdry.eps[idx_reg(s)], bdry.relative_tilt_x[idx_reg(s)], bdry.relative_tilt_y[idx_reg(s)], bdry.relative_surfaces[idx_reg(s),:,:], lambda, coords, modes; prop=prop) :
                         propagation_matrices[idx_reg(s)])
 
-        # T_s^m = T_{s+1}^m G_s P_s
         transmissionfunction_complete *= get_boundary_matrix(sqrt(bdry.eps[idx_reg(s)]), sqrt(bdry.eps[idx_reg(s+1)]), diffprop, modes)
     end
-    #println(axion_beam)
-    #println(transmissionfunction_complete[index(modes,2),index(modes,2)])
 
-    # The rest of 4.14a
     boost =  - (transmissionfunction_complete[index(modes,2),index(modes,2)]) \ (axion_beam)
-    # The backslash operator A\b solves the linear system Ax = b for x
-    # Alternative ways are e.g.
-    #rtol = sqrt(eps(real(float(one(eltype(transmissionfunction_complete[index(modes,2),index(modes,2)]))))))
-    #boost = - pinv(transmissionfunction_complete[index(modes,2),index(modes,2)], rtol=rtol) * (axion_beam)
-    # If no reflectivity is ought to be calculated, we only return the axion field
+
     if reflect === nothing
         return boost
     end
@@ -220,3 +150,28 @@ function transformer(bdry::SetupBoundaries, coords::CoordinateSystem, modes::Mod
            ((transmissionfunction_complete[index(modes,2),index(modes,1)]) * (reflect))
     return boost, refl
 end
+
+
+
+
+
+
+freqs = range(18e9,24e9,10_000);
+
+
+coords = SeedCoordinateSystem(X=-0.5:0.02:0.5,Y=-0.5:0.02:0.5)
+diskR = 0.15
+
+eps = Complex{Float64}[NaN,1,24.0,1]
+distance = [0,7,1,0]*1e-3
+tiltx = deg2rad.([0,1,0,-1])
+tilty = deg2rad.([0,0,0,0])
+
+sbdry = SeedSetupBoundaries(coords; diskno=1,distance=distance,epsilon=eps,
+    relative_tilt_x=tiltx,relative_tilt_y=tilty)
+
+M = 3; L = 2
+modes = SeedModes(coords, ThreeDim=true, Mmax=M, Lmax=L, diskR=diskR)
+
+
+ax = axion_induced_modes(coords,modes)
