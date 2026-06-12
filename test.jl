@@ -11,8 +11,8 @@ diskR = 0.15
 
 eps = Complex{Float64}[NaN,1,24.0,1]
 distance = [0,7,1,0]*1e-3
-tiltx = deg2rad.([0,1,0,-1])
-tilty = deg2rad.([0,0,0,0])
+tiltx = deg2rad.([0,0.1,0,-0.1])*0
+tilty = deg2rad.([0,0.1,0,-0.1])
 
 sbdry = SeedSetupBoundaries(coords; diskno=1,distance=distance,epsilon=eps,
     relative_tilt_x=tiltx,relative_tilt_y=tilty)

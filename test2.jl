@@ -72,7 +72,6 @@ end
 function get_boundary_matrix(n_left, n_right, diffprop::Array{Complex{T}}, modes::Modes) where T<:Real
     G = (( (1. /(2*n_right)).*[(n_right+n_left)*modes.id (n_right-n_left)*modes.id ; (n_right-n_left)*modes.id (n_right+n_left)*modes.id] ))
 
-
     return G * [diffprop modes.zeromatrix; modes.zeromatrix inv(Array{Complex{T}}(diffprop))]
 end
 
